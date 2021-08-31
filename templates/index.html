@@ -1,0 +1,688 @@
+{% extends "layout.html" %}
+
+{% block title %}
+    Index
+{% endblock %}
+
+{% block main %}
+    <div class="row">
+        <div class="column1">
+            <div id="userInterface">
+                <div id="panel">
+                    <div id="select">
+                        <p><i>Please select a station and time</i></p>
+                        <select id="stations" name="stations" autocomplete="off"></select>
+                        <select id="hour" name="hour"></select>
+                        <input id="predict" type="button" value="Predict availability">
+                    </div>
+                    <div id="filters">
+                        <div id="filter1">
+                            <!--    label for the parking slot toggle switch-->
+                            <label style='font-family: sans-serif;'>Free parking stations:</label>
+                            <!--    declare a input type checkbox for available parking slots which acts a toggle switch using css-->
+                            <label class="toggle">
+                                <input id="slideparking" type="checkbox" display="none" onclick="slideparking_click()"><span class="slider"></span>
+                            </label>
+                        </div>
+                        <div id="filter2">
+                            <!--    label for the available bikes toggle switch-->
+                            <label style='font-family: sans-serif;'>Free bike stations:</label>
+                            <!--    declare another input type checkbox for available bikes which acts a toggle switch using css-->
+                            <label class="toggle">
+                                <input id="slidebikeavailable" type="checkbox" display="none" onclick="slidebikeavailable_click()"><span class="slider"></span>
+                            </label>
+                        </div> 
+                    </div>
+
+                    <table id="results">
+                        <tr><td colspan="2"><i><b>Note: Select station, time to get the results below!!</b></i></td></tr>
+                        <tr id="result"><td style="width: 30px;"><i><b>Expected no. bikes: </b></i></td></tr>
+                        <tr><td colspan="2"><i><b>Note: Click current location to get the station name!!</b></i></td></tr>
+                        <tr id="nearest"><td style="width: 30px;"><i><b>Nearest station: </b></i></td></tr>
+                        <tr id="distance"><td><i><b>Travel Distance (km):</b></i></td></tr>
+                    </table>
+                </div>
+                
+                <div id="weather">
+                    {% set weather = post %}
+                    <div style="display: block;">
+                        <img src={{ weather["condition"]["icon"] }} alt='weather icon'>
+                    </div>
+                    <div style='float: left; padding-left: 20px;'>
+                        <p style="font-size: 40px;">{{ weather["temp_c"] }}&#176C</p>
+                        <p style="font-size: 20px;">{{ weather["condition"]["text"] }}</p>
+                    </div>
+                    <div style='float: left; padding-left: 20px;'>
+                        <p>Cloud cover: {{ weather["cloud"] }}%</p>
+                        <p>Precipitation: {{ weather["precip_mm"] }} mm</p>
+                        <p>Wind speed: {{ weather["wind_kph"] }} kph</p>
+                    </div>
+                </div> 
+            </div>
+        </div>
+        
+        <div id="mapUI" class="column2">
+            <div id="floating-panel">
+                <b>Mode of Travel: </b>
+                <select id="mode">
+                    <option value="DRIVING">Driving</option>
+                    <option value="WALKING">Walking</option>
+                    <option value="BICYCLING">Bicycling</option>
+                    <option value="TRANSIT">Transit</option>
+                </select>
+            </div>
+            <div id="Night-mode">
+              <b>Night mode: </b>
+              <label class="toggle">
+                    <input id="slideNightMode" type="checkbox" display="none"><span class="slider"></span>
+                </label>
+            </div>
+            <div id="map"></div>
+        </div>
+    </div>
+
+    <div id="charts">
+        <div id="weeklyChart" class="col"></div>
+        <div id="hourlyChart" class="col"></div>
+    </div>
+    
+    <footer><p>Copyright &copy; 2009-2021 Dublin Bikes</p></footer>
+
+    <script>
+        // splash screen
+        function loading() {
+            const splash = document.createElement("div");
+            splash.className = "overlay";
+            splash.id = "splash";
+            splash.innerHTML = "<img class='Logo' src='{{ url_for('static', filename='splash.jpeg') }}' alt='Logo'>";
+            document.getElementsByTagName("body")[0].appendChild(splash);
+            return new Promise(resolve => {
+                setTimeout(() => {
+                    resolve('resolved');
+                }, 2000);
+            });
+            document.getElementsByTagName("body")[0].removeChild(splash);
+        }
+        
+        function removeSplash() {
+            const splash = document.getElementById("splash");
+            document.getElementsByTagName("body")[0].removeChild(splash);
+        }
+
+        async function asyncCall() {
+            console.log('calling');
+            const result = await loading();
+            console.log(result);
+            removeSplash();
+        }
+
+        asyncCall();
+        
+        // populate time dropdown with remaining hours of the day
+         window.onload = function (e) {
+                createTimeDropdown('#hour');
+         }
+        // create a variable to check the status of the switch
+        var parking_slots_filter = false;
+        var bikes_available_filter = false;
+        // create a function to show the markers acc. to choice made
+        function slidebikeavailable_click(){
+        // check if the switch is on, apply status to variable and call the map function
+            if(document.getElementById("slidebikeavailable").checked == true){
+                bikes_available_filter = true;
+            }
+            else{
+                bikes_available_filter = false;
+            }
+            initMap();
+        }
+        function slideparking_click(){
+            if(document.getElementById("slideparking").checked == true){
+                parking_slots_filter = true;
+            }
+            else{
+                parking_slots_filter = false;
+            }
+            initMap();
+        }
+
+        function initChart(){
+            google.charts.load("current", {packages:["corechart"]});
+            google.charts.setOnLoadCallback(initMap);
+        }
+
+        function initMap() {
+            // the result of fetch("/stations") is cached using lru_cache decorator
+            // static and dynamic arrays logged to console are within the scope of map marker and info window functions
+            fetch("/stations").then(response => {
+                return response.json();
+            }).then(static => {
+                console.log(static);
+                // map centered on Dublin
+                var directionsService = new google.maps.DirectionsService;
+                var directionsDisplay = new google.maps.DirectionsRenderer;
+                map = new google.maps.Map(document.getElementById("map"), {
+                    center: {lat: 53.3470, lng: -6.2603},
+                    zoom: 13.5,
+                });
+                
+                var myLatLng;
+                var CurrentLocationStatus = "False";
+                document.getElementById("Night-mode").addEventListener("click", () => {
+                if(document.getElementById("slideNightMode").checked == true)
+                    {
+                      map.setOptions({
+                      styles: [
+                          { elementType: "geometry", stylers: [{ color: "#242f3e" }] },
+                          { elementType: "labels.text.stroke", stylers: [{ color: "#242f3e" }] },
+                          { elementType: "labels.text.fill", stylers: [{ color: "#746855" }] },
+                          {
+                            featureType: "administrative.locality",
+                            elementType: "labels.text.fill",
+                            stylers: [{ color: "#d59563" }],
+                          },
+                          {
+                            featureType: "poi",
+                            elementType: "labels.text.fill",
+                            stylers: [{ color: "#d59563" }],
+                          },
+                          {
+                            featureType: "poi.park",
+                            elementType: "geometry",
+                            stylers: [{ color: "#263c3f" }],
+                          },
+                          {
+                            featureType: "poi.park",
+                            elementType: "labels.text.fill",
+                            stylers: [{ color: "#6b9a76" }],
+                          },
+                          {
+                            featureType: "road",
+                            elementType: "geometry",
+                            stylers: [{ color: "#38414e" }],
+                          },
+                          {
+                            featureType: "road",
+                            elementType: "geometry.stroke",
+                            stylers: [{ color: "#212a37" }],
+                          },
+                          {
+                            featureType: "road",
+                            elementType: "labels.text.fill",
+                            stylers: [{ color: "#9ca5b3" }],
+                          },
+                          {
+                            featureType: "road.highway",
+                            elementType: "geometry",
+                            stylers: [{ color: "#746855" }],
+                          },
+                          {
+                            featureType: "road.highway",
+                            elementType: "geometry.stroke",
+                            stylers: [{ color: "#1f2835" }],
+                          },
+                          {
+                            featureType: "road.highway",
+                            elementType: "labels.text.fill",
+                            stylers: [{ color: "#f3d19c" }],
+                          },
+                          {
+                            featureType: "transit",
+                            elementType: "geometry",
+                            stylers: [{ color: "#2f3948" }],
+                          },
+                          {
+                            featureType: "transit.station",
+                            elementType: "labels.text.fill",
+                            stylers: [{ color: "#d59563" }],
+                          },
+                          {
+                            featureType: "water",
+                            elementType: "geometry",
+                            stylers: [{ color: "#17263c" }],
+                          },
+                          {
+                            featureType: "water",
+                            elementType: "labels.text.fill",
+                            stylers: [{ color: "#515c6d" }],
+                          },
+                          {
+                            featureType: "water",
+                            elementType: "labels.text.stroke",
+                            stylers: [{ color: "#17263c" }],
+                          },
+                            ],
+                      });
+                    }
+                else{
+                    map.setOptions({
+                        styles: [
+                            {
+                              featureType: "poi.business",
+                              stylers: [{ visibility: "off" }],
+                            },
+                            {
+                              featureType: "transit",
+                              elementType: "labels.icon",
+                              stylers: [{ visibility: "off" }],
+                            },
+                        ],
+                    });
+                }
+            });
+                   
+                directionsDisplay.setMap(map);
+                var NearestStationName;
+                var markers = [];
+                
+                static.forEach(station => {                    
+                    dropDownList = document.getElementById("stations");
+                    // populate select element with station options
+                    var stOp = document.createElement("option");
+                    stOp.setAttribute("value",station.num);
+                    stOp.setAttribute("label",station.name);
+                    // assign selected attribute to previously selected station stored in localStorage
+                    if (parseInt(stOp.value) == parseInt(localStorage['selSt'])) {
+                        stOp.selected = true;
+                    }
+                    dropDownList.appendChild(stOp);
+                });
+                
+                const locationButton = document.createElement("button");
+                locationButton.innerHTML = '<img class="ImgCurr" src="{{url_for('static', filename='CurrentLocation.png')}}" title="View current location" alt="Current Location"/>';
+                locationButton.className = "CurrMarker";
+                locationButton.classList.add("custom-map-control-button");
+                map.controls[google.maps.ControlPosition.TOP_RIGHT].push(locationButton);
+                
+                    // insert current location marker on map
+                    var duplicate_marker = false;
+                    infoWindow = new google.maps.InfoWindow();
+                    
+                    locationButton.addEventListener("click", () => {
+                        if(duplicate_marker){
+                            duplicate_marker = false;
+                        }
+                        
+                        const pos = {
+                            lat: 53.3027454557,
+                            lng: -6.21700913196,
+                        };
+                        myLatLng = {
+                            lat: 53.3027454557,
+                            lng: -6.21700913196,
+                        };
+                        var icon = {
+                        url: "{{url_for('static', filename='Curr_location_marker.png')}}",
+                        scaledSize: new google.maps.Size(30, 40),
+                        };
+                        const marker = new google.maps.Marker({
+                        position: { lat: 53.3027454557, lng: -6.21700913196},
+                        icon: icon,
+                        map:map,
+                        });
+                        duplicate_marker = marker;
+                        map.setCenter(pos);
+                        find_closest_marker(myLatLng, static);
+                        CurrentLocationStatus = "True";
+                         var infowindow = new google.maps.InfoWindow({
+                                content: '<h3>Mock current location</h3>',
+                        });
+                        
+                       infowindow.open(map,marker);
+                        google.maps.event.addListener(marker,"click",function() {
+                            infowindow.open(map,marker);
+                        })
+                    });
+                    
+                    function rad(x) {return x*Math.PI/180;}
+                    function find_closest_marker(event, data) {
+                        // To Capture the current location of the user. Enable the below 2 lines
+                        var lat = event.lat;
+                        var lng = event.lng;
+                        var R = 6371; // radius of earth in km
+                        var distances = [];
+                        var closest = -1;
+                        var i=0;
+                        var t;
+                        var n;
+                        var dic;
+                        data.forEach(row => {
+                            var mlat = row.latitude;
+                            var mlng = row.longitude;
+                            var dLat  = rad(mlat - lat);
+                            var dLong = rad(mlng - lng);
+                            var a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                                Math.cos(rad(lat)) * Math.cos(rad(lat)) * Math.sin(dLong/2) * Math.sin(dLong/2);
+                            var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                            var d = R * c;
+                            distances[i] = d;
+                            if ( closest == -1 || d < distances[closest] ) {
+                                closest = i;
+                                NearestStationName = row.address;
+                                n = row.number;
+                                dic = {
+                                lat: row.latitude,
+                                lng: row.longitude,
+
+                              };
+                            }
+                            i = i+1;
+                        })
+                        for (var i=0; i<markers.length; i++) {
+                            if((markers[i].getPosition().lat() == dic.lat) && (markers[i].getPosition().lng() == dic.lng)){
+                                var icon = {
+                                    url: "{{url_for('static', filename='Nearest.png')}}",
+                                    scaledSize: new google.maps.Size(32, 40),
+                              };
+                                markers[i].setIcon(icon);
+                            }
+                        }
+                        var row = document.getElementById("nearest");
+                        const len = document.getElementById("nearest").cells.length; // check if there is a result already there
+                        if (len > 1) {
+                            row.deleteCell(1);
+                        }
+                        var newCell = row.insertCell(1);
+                        newCell.width = "50px";
+                        newCell.innerHTML = NearestStationName;
+                    }
+                
+                fetch("/dynamic").then(response => {
+                    return response.json();
+                }).then(dynamic => {
+                    console.log(dynamic);
+                    
+                let i = 0;
+                static.forEach(station => {                    
+                    // function to create marker colour proportional to free stands
+                    function getIcon(totalStands,bikesFree) {
+                        if (bikesFree/totalStands > 0.6) {
+                            return "http://maps.google.com/mapfiles/ms/icons/green-dot.png"
+                        }
+                        else if (bikesFree/totalStands < 0.3) {
+                            return "http://maps.google.com/mapfiles/ms/icons/red-dot.png"
+                        }
+                        else {
+                            return "http://maps.google.com/mapfiles/ms/icons/yellow-dot.png"
+                        }
+                    }
+                    // create unique marker for each station
+                    const marker = new google.maps.Marker({
+                        position: {lat: station.latitude, lng: station.longitude},
+                        icon: getIcon(dynamic[i].bike_stands,dynamic[i].bikes_free),
+                        map: map});
+                        
+                        markers.push(marker);
+                        // create an info window to display station and dynamic information
+                            var infowindow = new google.maps.InfoWindow({
+                                content: '<h3>'+station.name+'</h3><p><b>Total stands</b></p><p>'+dynamic[i].bike_stands+'</p>'+'<p><b> Available bikes </b></p><p>'+dynamic[i].bikes_free+'</p>'+'<p><b>Parking slots</b></p><p>'+dynamic[i].stands_free,
+                            });
+
+                        // check if the variable is true and if the bike stands for any of the station is 0
+                        if(parking_slots_filter == true && station.stands_free == 0){
+                        // if any of the station is not having parking slots, then hide that station marker
+                            marker.setVisible(false);
+                        }
+                        // check if available bikes variable is true and if any station with available bikes as 0
+                        if(bikes_available_filter == true && station.bikes_free == 0){
+                        // if any of the station is not having parking slots, then hide that station marker
+                            marker.setVisible(false);
+                        }
+                        // add event listeners to map markers
+                        google.maps.event.addListener(marker,"mouseover",function() {
+                            infowindow.open(map,marker);
+                        })
+                        google.maps.event.addListener(marker,"mouseout",function() {
+                            infowindow.close();
+                        })
+                        google.maps.event.addListener(marker,"click",function() {
+                            WeeklyChart(station.num);
+                            HourlyChart(station.num);
+                            // need to use localStorage here to ensure maker location updates and persists
+                            localStorage['lat'] = marker.getPosition().lat();
+                            localStorage['lng'] = marker.getPosition().lng();
+                            calculateAndDisplayRoute(directionsService, directionsDisplay, marker.getPosition().lat(), marker.getPosition().lng());
+                            document.getElementById("mode").addEventListener("change", () => {
+                                calculateAndDisplayRoute(directionsService, directionsDisplay, Number(localStorage.getItem('lat')), Number(localStorage.getItem('lng')));
+                            });
+                        })
+                    i++;
+                    })
+                    var cluster = new MarkerClusterer(map, markers, {
+                        imagePath:
+                          "https://developers.google.com/maps/documentation/javascript/examples/markerclusterer/m",
+                    });
+
+                    function calculateAndDisplayRoute(directionsService, directionsDisplay, Destination_Lat, Destination_lng){
+                        if(CurrentLocationStatus == "True"){
+                            const selectedMode = document.getElementById("mode").value;
+                            let request = {
+                                origin: myLatLng,
+                                destination: {
+                                    lat: Destination_Lat,
+                                    lng: Destination_lng
+                                },
+                                travelMode: google.maps.TravelMode[selectedMode]
+                            };
+                            
+                            var distanceInMeters = google.maps.geometry.spherical.computeDistanceBetween(
+                                new google.maps.LatLng({
+                                    lat: myLatLng.lat,
+                                    lng: myLatLng.lng
+                                }),
+                                new google.maps.LatLng({
+                                    lat: Destination_Lat,
+                                    lng: Destination_lng
+                                })
+                            );
+                            var row = document.getElementById("distance");
+                            const len = document.getElementById("distance").cells.length; // check if there is a result already there
+                            if (len > 1) {
+                                row.deleteCell(1);
+                            }
+                            var newCell = row.insertCell(1);
+                            newCell.width = "50px";
+                            newCell.innerHTML = ((distanceInMeters* 0.001).toFixed(2));
+                            
+                            directionsService.route(request, function(response, status) {
+                                if(status === 'OK') {
+                                    directionsDisplay.setDirections(response);
+                                }else{
+                                    window.alert('Direction request failed due to '+ status);
+                                }
+                            });
+                        }
+                    }
+                    // Assign onclick handler to the Submit button.
+                    document.getElementById("predict").onclick = function () {
+                        selStat = getSelectedStation();
+                        numStat = parseInt(selStat,10);
+                        hour = getSelectedHour();
+                        predictBikes(numStat,hour);
+                        // zoom and center the map on the selected station
+                        for (station of static) {
+                            if (station.num == numStat) {
+                                var lat = parseFloat(station.latitude,10);
+                                var lng = parseFloat(station.longitude,10);
+                                latlng = new google.maps.LatLng(lat,lng);
+                                map.setZoom(16);
+                                map.setCenter(latlng);
+                            }
+                        }
+                    }
+            })});
+        }
+        // Functions
+        // function to populate time dropdown menu
+        function createTimeDropdown(selector){
+            var select = $(selector);
+            var today = new Date();
+            var time = today.getHours();
+            for (var i=time + 1; i<24; i++) {
+                var hour = i;
+                var ampm = hour >= 12 ? 'PM' : 'AM';
+                if (hour != 12) {
+                    hour = hour % 12;
+                }
+                select.append($('<option></option>')
+                .attr('value', i)
+                .text(hour + ":00" + ampm));
+            }
+        }
+        // function to get the station that is selected in the dropdown list
+        function getSelectedStation() {
+            var statSel = document.getElementById("stations");
+            var statSelLen = statSel.options.length;
+            for (var i=0; i<statSelLen; i++) {
+                opt = statSel.options[i];
+                if (opt.selected === true) {
+                    break;
+                }
+            }
+            localStorage['selSt'] = opt.value;
+            return opt.value;
+        }
+        // function to get the time that is selected in the dropdown list
+        function getSelectedHour() {
+            var selHour = document.getElementById("hour");
+            var hourSelLen = selHour.options.length;
+            for (var i=0; i<hourSelLen; i++) {
+                opt = selHour.options[i];
+                if (opt.selected === true) {
+                    break;
+                }
+            }
+            return opt.value;
+        }
+        // send the station number to the url and execute the query in app.py page
+        function WeeklyChart(station_number){
+            fetch("/occupancy/"+station_number).then(response => {
+                return response.json();
+            }).then(data => {
+                console.log(data);
+
+            var StationName = data[0].name;
+                
+            var options = {
+                animation: {
+                  duration: 1500,
+                  easing: 'linear',
+                  startup: true
+                },
+                curveType: 'function',
+                colors: ['red'],
+                legend: 'none',
+                height: 250,
+                tooltip: { isHtml: true },
+                hAxis: {
+                    slantedText: false,
+                },
+                 vAxis: {
+                    title: 'Average Bikes Available',
+                    titleTextStyle: { italic: false, fontName: 'Calibri', fontSize: '20', bold: 'false' },
+                },
+                chartArea: {
+                    width: '64%'
+                },
+                title: StationName + " Weekly Data",
+                titleTextStyle: { fontName: 'Calibri', fontSize: '20' },
+                width: '100%',
+                height: '500'
+            }
+
+            // store week days in an array to represent them on x-axis as they are unordered in the json data
+            var WeeklyDays = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+
+                
+                var chart = new google.visualization.LineChart(document.getElementById('weeklyChart'));
+                var chart_data = new google.visualization.DataTable();
+
+                // provide the data type and value name in the below line
+                chart_data.addColumn('string', "Week_Day_No");
+                chart_data.addColumn('number' ,"Avg_bikes_free" );
+
+                // loop through all the days in a week and display the avg
+                for(var i=0; i<WeeklyDays.length; i++){
+                    for(var j=0; j<data.length; j++){
+                     
+                        if(WeeklyDays[i] == data[j]['Week_Day_No']){
+                            
+                            chart_data.addRow([WeeklyDays[i].substr(0, 3), data[j]['Avg_bikes_free']]);
+                        }
+                    }
+                }
+                chart.draw(chart_data, options);
+            });
+
+        }
+
+        function HourlyChart(station_number){
+            console.log("This is chart function ",station_number);
+            fetch("/hourly/"+station_number).then(response => {
+                return response.json();
+            }).then(data => {
+                console.log(data);
+                
+                var StationName = data[0].name;
+
+                var options = {
+                    animation: {
+                      duration: 1500,
+                      easing: 'linear',
+                      startup: true
+                    },
+                    curveType: 'function',
+                    colors: ['red'],
+                    legend: 'none',
+                    height: 250,
+                    tooltip: { isHtml: true },
+                    hAxis: {
+                        ticks: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+                    },
+                     vAxis: {
+                        title: 'Average Bikes Available',
+                        titleTextStyle: { italic: false, fontName: 'Calibri', fontSize: '20', bold: 'false' },
+                    },
+                    chartArea: {
+
+                        width: '85%'
+                    },
+                    title: StationName + " Hourly Data",
+                    titleTextStyle: { font: 'Calibri', fontSize: '20' },
+                    width: '100%',
+                    height: '500'
+                }
+                var chart = new google.visualization.LineChart(document.getElementById('hourlyChart'));
+                var chart_data = new google.visualization.DataTable();
+                chart_data.addColumn('number', "Hour");
+                chart_data.addColumn('number' ,"Avg_bikes_free" );
+
+                 data.forEach(v => {
+                    chart_data.addRow([v.Hours, v.Avg_bikes_free]);
+                 })
+                 chart.draw(chart_data, options);
+            });
+        }
+        
+        function predictBikes(station_number,hour) {
+            fetch("/predict/"+station_number+"/"+hour).then(response => {
+                return response.json();
+            }).then(data => {
+                console.log(data);
+                var row = document.getElementById("result");
+                const len = document.getElementById("result").cells.length; // check if there is a result already there
+                if (len > 1) {
+                    row.deleteCell(1);
+                }
+                var newCell = row.insertCell(1);
+                newCell.width = "50px";
+                newCell.innerHTML = Math.round(data[5]);
+        })}
+</script>
+
+<!-- Async script executes immediately and must be after any DOM elements used in callback. -->
+<script async
+    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDXGwi384HVo-MXNLWnXcmWYNWujsWi5OI&callback=initChart">
+</script>
+{% endblock %}

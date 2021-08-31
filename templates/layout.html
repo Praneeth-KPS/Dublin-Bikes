@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='stylesheet.css') }}">
+        <link rel="preconnect" href="https://fonts.gstatic.com">
+        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300&display=swap" rel="stylesheet">
+        <script src="https://code.jquery.com/jquery-2.2.4.js"></script>
+        <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+        <script src="https://unpkg.com/@google/markerclustererplus@4.0.1/dist/markerclustererplus.min.js"></script>
+            <title>Dublin Bikes: {% block title %}{% endblock %}</title>
+    </head>
+
+    <body>
+        <header>
+            <a href="/"><img class="Logo" src="{{ url_for('static', filename='logo.jpg') }}" alt="Logo"></a>
+            <nav>
+                <a href="/">Home</a>
+                <a href="/about">About</a>
+                <a href="/subscribe">Subscriptions</a>
+                <a href="/terms">Terms</a>
+            </nav>
+        </header>
+        
+        <footer><p>Copyright &copy; 2009-2021 Dublin Bikes</p></footer>
+
+        <main>
+            {% block main %}{% endblock %}
+        </main>
+
+    </body>
+
+</html>
